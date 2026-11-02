@@ -1,12 +1,24 @@
 const mongoose = require("mongoose");
 
-async function connectDb (){
-   try {
-      await mongoose.connect("mongodb+srv://abhishekyadav:EPio9PKCb7iRaB9R@uberapp.gadacue.mongodb.net/tectonicadminpanel")
-      console.log("database is connected");
-   } catch (error) {
-     console.log("ERROR FROM CONNECT DATABASE FUNCTION:",error)   
-   }
-}
+const connectDb = async () => {
+  const uri = process.env.MONGO_URI;
 
-module.exports = connectDb
+  if (!uri) {
+    throw new Error("MONGO_URI is not set. Add it to your .env file.");
+  }
+
+  mongoose.connection.on("error", (error) =>
+    console.error("MongoDB error:", error.message)
+  );
+  mongoose.connection.on("disconnected", () =>
+    console.warn("MongoDB disconnected")
+  );
+
+  // Gives up after 5 seconds with the real reason, instead of buffering for 10
+  await mongoose.connect(uri, { serverSelectionTimeoutMS: 5000 });
+
+  console.log(`Database connected: ${mongoose.connection.name}`);
+};
+
+// It throws on failure, so the server file decides what to do
+module.exports = connectDb;
