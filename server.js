@@ -15,6 +15,9 @@ app.use("/api/projects",projectRoutes)
 app.use("/api/blogs",blogRoutes)
 app.use("/api/clients",clientRoutes)
 connectDb()
+app.get("/",(req,res)=>{
+   res.send("your server is healthy its. techtonic web server")
+})
 app.listen(PORT,()=>{
    console.log("your number is :",PORT) 
 })
