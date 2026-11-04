@@ -3,6 +3,7 @@ const express = require("express");
 const router = express.Router();
 
 const { upload } = require("../middlewares/upload");
+const authentication = require("../middlewares/authentication");
 
 const {
   createGallery,
@@ -11,20 +12,59 @@ const {
   updateGallery,
   deleteGallery,
 } = require("../controllers/gallery.controller");
-// CREATE GALLERY IMAGE
 
-router.post("/", upload.single("image"), createGallery);
-// GET ALL GALLERY IMAGES
 
-router.get("/", getGallery);
-// GET SINGLE GALLERY IMAGE
+// ==========================================
+// PUBLIC ROUTES
+// ==========================================
 
-router.get("/:id", getGalleryById);
-// UPDATE GALLERY IMAGE
+// Get All Gallery Images
+// GET /api/gallery
+router.get(
+  "/",
+  getGallery
+);
 
-router.put("/:id", upload.single("image"), updateGallery);
-// DELETE GALLERY IMAGE
 
-router.delete("/:id", deleteGallery);
+// Get Single Gallery Image
+// GET /api/gallery/:id
+router.get(
+  "/:id",
+  getGalleryById
+);
+
+
+// ==========================================
+// ADMIN ROUTES
+// ==========================================
+
+// Create Gallery Image
+// POST /api/gallery
+router.post(
+  "/",
+  authentication,
+  upload.single("image"),
+  createGallery
+);
+
+
+// Update Gallery Image
+// PUT /api/gallery/:id
+router.put(
+  "/:id",
+  authentication,
+  upload.single("image"),
+  updateGallery
+);
+
+
+// Delete Gallery Image
+// DELETE /api/gallery/:id
+router.delete(
+  "/:id",
+  authentication,
+  deleteGallery
+);
+
 
 module.exports = router;
