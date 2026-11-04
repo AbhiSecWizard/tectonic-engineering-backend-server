@@ -13,8 +13,10 @@ const connectDb = require("./src/config/db")
 app.use(express.json())
 app.use(cookieParser());   
 app.use(cors({
-   origin:["http://localhost:5173","https://tectonic-engineering-backend-server.vercel.app"]
-   credentials:true
+   origin:"http://localhost:5173",
+   credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
 }))
 app.use("/api/projects",projectRoutes)
 app.use("/api/blogs",blogRoutes)
@@ -24,9 +26,19 @@ app.use("/api/team",teamRoutes)
 app.use("/api/admin",authRouter)
 connectDb()
 
-app.get("/",(req,res)=>{
-   res.send("your server is healthy its. techtonic web server")
-})
+app.get("/", (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "Your Tectonic server is healthy",
+  });
+});
+
+
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
 
 app.listen(PORT,()=>{
    console.log("your number is :",PORT) 
