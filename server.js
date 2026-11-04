@@ -13,7 +13,7 @@ const connectDb = require("./src/config/db")
 app.use(express.json())
 app.use(cookieParser());   
 app.use(cors({
-   origin:"http://localhost:5173",
+   origin:["http://localhost:5173","https://tectonic-engineering-admin.vercel.app"],
    credentials:true
 }))
 app.use("/api/projects",projectRoutes)
