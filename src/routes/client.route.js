@@ -1,3 +1,4 @@
+
 const express = require("express");
 
 const {
@@ -11,6 +12,7 @@ const {
 
 const { upload } = require("../middlewares/upload");
 const authentication = require("../middlewares/authentication");
+const authorize = require("../middlewares/authorize");
 
 const router = express.Router();
 
@@ -33,10 +35,10 @@ router.get(
 
 // Create Client
 // POST /api/clients
-// logo -> single image
 router.post(
   "/",
   authentication,
+  authorize("clients", "create"),
   upload.single("logo"),
   createClient
 );
@@ -47,6 +49,7 @@ router.post(
 router.get(
   "/",
   authentication,
+  authorize("clients", "read"),
   getClients
 );
 
@@ -56,16 +59,17 @@ router.get(
 router.get(
   "/:id",
   authentication,
+  authorize("clients", "read"),
   getClientById
 );
 
 
 // Update Client
 // PUT /api/clients/:id
-// new logo -> optional
 router.put(
   "/:id",
   authentication,
+  authorize("clients", "update"),
   upload.single("logo"),
   updateClient
 );
@@ -76,6 +80,7 @@ router.put(
 router.delete(
   "/:id",
   authentication,
+  authorize("clients", "delete"),
   deleteClient
 );
 

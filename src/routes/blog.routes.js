@@ -1,7 +1,9 @@
+
 const express = require("express");
 
 const { upload } = require("../middlewares/upload");
 const authentication = require("../middlewares/authentication");
+const authorize = require("../middlewares/authorize");
 
 const {
   getPublishedPosts,
@@ -41,7 +43,7 @@ const uploadCover = (req, res, next) => {
 
 
 // ==========================================
-// Public Routes
+// Public Routes (No Authentication)
 // ==========================================
 
 // Get published blogs
@@ -59,6 +61,7 @@ router.get("/categories", getCategories);
 router.get(
   "/admin/all",
   authentication,
+  authorize("blogs", "read"),
   getAllPosts
 );
 
@@ -66,13 +69,13 @@ router.get(
 router.get(
   "/admin/:id",
   authentication,
+  authorize("blogs", "read"),
   getPostById
 );
 
 
 // ==========================================
 // Public Single Blog
-// IMPORTANT: Keep this after /admin routes
 // ==========================================
 
 router.get("/:slug", getPostBySlug);
@@ -86,6 +89,7 @@ router.get("/:slug", getPostBySlug);
 router.post(
   "/",
   authentication,
+  authorize("blogs", "create"),
   uploadCover,
   createPost
 );
@@ -94,6 +98,7 @@ router.post(
 router.put(
   "/:id",
   authentication,
+  authorize("blogs", "update"),
   uploadCover,
   updatePost
 );
@@ -102,6 +107,7 @@ router.put(
 router.patch(
   "/:id/status",
   authentication,
+  authorize("blogs", "update"),
   updateStatus
 );
 
@@ -109,6 +115,7 @@ router.patch(
 router.patch(
   "/:id/featured",
   authentication,
+  authorize("blogs", "update"),
   toggleFeatured
 );
 
@@ -116,6 +123,7 @@ router.patch(
 router.delete(
   "/:id",
   authentication,
+  authorize("blogs", "delete"),
   deletePost
 );
 

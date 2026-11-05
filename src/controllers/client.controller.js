@@ -1,33 +1,60 @@
+
 const mongoose = require("mongoose");
 
 const Client = require("../models/client.model");
+const Project = require("../models/project.model");
 
 const {
   uploadToCloudinary,
   deleteFromCloudinary,
 } = require("../services/cloudinaryUpload");
 
+const createAuditLog = require("../utils/createAuditLog");
+
 
 // =====================================================
-// Helper - Parse FormData
+// CONFIGURATION
 // =====================================================
 
+const CLIENT_LOGO_FOLDER = "tectonic/clients";
+
+
+// =====================================================
+// HELPER FUNCTIONS
+// =====================================================
+
+// Parse JSON fields coming from FormData
+const parseJSONField = (value, fieldName) => {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw new Error(`Invalid JSON format for ${fieldName}`);
+  }
+};
+
+
+// Convert FormData into usable client data
 const parseClientData = (body) => {
   const data = { ...body };
 
-  // Objects / arrays FormData me string banke aate hain
+  const jsonFields = [
+    "location",
+    "contacts",
+    "work",
+  ];
 
-  if (typeof data.location === "string") {
-    data.location = JSON.parse(data.location);
-  }
-
-  if (typeof data.contacts === "string") {
-    data.contacts = JSON.parse(data.contacts);
-  }
-
-  if (typeof data.work === "string") {
-    data.work = JSON.parse(data.work);
-  }
+  jsonFields.forEach((field) => {
+    if (data[field] !== undefined) {
+      data[field] = parseJSONField(
+        data[field],
+        field
+      );
+    }
+  });
 
   // Boolean conversion
   if (data.showOnWebsite !== undefined) {
@@ -39,9 +66,83 @@ const parseClientData = (body) => {
   // Number conversion
   if (data.displayOrder !== undefined) {
     data.displayOrder = Number(data.displayOrder);
+
+    if (!Number.isFinite(data.displayOrder)) {
+      throw new Error("Invalid displayOrder value");
+    }
   }
 
   return data;
+};
+
+
+// Validate MongoDB ObjectId
+const isValidId = (id) => {
+  return mongoose.isValidObjectId(id);
+};
+
+
+// Common API error response
+const sendError = (res, error) => {
+  console.error("Client Controller Error:", error);
+
+  if (error.name === "ValidationError") {
+    const errors = Object.values(error.errors).map(
+      (item) => item.message
+    );
+
+    return res.status(400).json({
+      success: false,
+      message: errors[0],
+      errors,
+    });
+  }
+
+  if (error.name === "CastError") {
+    return res.status(400).json({
+      success: false,
+      message: `Invalid value for ${error.path}`,
+    });
+  }
+
+  if (error.code === 11000) {
+    return res.status(409).json({
+      success: false,
+      message: "Client with this name already exists",
+    });
+  }
+
+  const statusCode =
+    error.message?.startsWith("Invalid JSON") ||
+    error.message?.startsWith("Invalid displayOrder")
+      ? 400
+      : 500;
+
+  const message =
+    process.env.NODE_ENV === "production" &&
+    statusCode === 500
+      ? "Server error"
+      : error.message;
+
+  return res.status(statusCode).json({
+    success: false,
+    message: message || "Server error",
+  });
+};
+
+
+// Cloudinary cleanup without breaking the main operation
+const safelyDeleteImage = async (publicId) => {
+  if (!publicId) return;
+
+  try {
+    await deleteFromCloudinary(publicId);
+  } catch (error) {
+    console.error(
+      "Cloudinary cleanup error:",
+      error.message
+    );
+  }
 };
 
 
@@ -56,43 +157,42 @@ const createClient = async (req, res) => {
   try {
     const data = parseClientData(req.body);
 
-    // Upload logo
+    // Upload logo to Cloudinary
     if (req.file) {
       uploadedLogo = await uploadToCloudinary(
         req.file.buffer,
-        "tectonic/clients"
+        CLIENT_LOGO_FOLDER
       );
 
       data.logo = uploadedLogo;
     }
 
+    // Create client in MongoDB
     const client = await Client.create(data);
+
+    // Activity Log
+    await createAuditLog({
+      req,
+      module: "clients",
+      action: "create",
+      description: `Created client: ${client.name}`,
+      targetId: client._id,
+      targetName: client.name,
+    });
 
     return res.status(201).json({
       success: true,
       message: "Client created successfully",
       data: client,
     });
+
   } catch (error) {
-
-    // DB save fail hua but image upload ho chuki thi
+    // Rollback uploaded image if database operation fails
     if (uploadedLogo?.publicId) {
-      await deleteFromCloudinary(uploadedLogo.publicId);
+      await safelyDeleteImage(uploadedLogo.publicId);
     }
 
-    console.error("Create client error:", error);
-
-    if (error.code === 11000) {
-      return res.status(409).json({
-        success: false,
-        message: "Client with this name already exists",
-      });
-    }
-
-    return res.status(400).json({
-      success: false,
-      message: error.message,
-    });
+    return sendError(res, error);
   }
 };
 
@@ -113,27 +213,23 @@ const getClients = async (req, res) => {
 
     const filter = {};
 
-
     // Sector filter
     if (sector) {
       filter.sector = sector;
     }
-
 
     // Status filter
     if (status) {
       filter.status = status;
     }
 
-
-    // Website filter
+    // Website visibility filter
     if (showOnWebsite !== undefined) {
       filter.showOnWebsite =
         showOnWebsite === "true";
     }
 
-
-    // Search
+    // Search by client name or short name
     if (search) {
       filter.$or = [
         {
@@ -142,7 +238,6 @@ const getClients = async (req, res) => {
             $options: "i",
           },
         },
-
         {
           shortName: {
             $regex: search,
@@ -152,14 +247,12 @@ const getClients = async (req, res) => {
       ];
     }
 
-
     const clients = await Client.find(filter)
       .sort({
         displayOrder: 1,
         createdAt: -1,
       })
       .populate("projectCount");
-
 
     return res.status(200).json({
       success: true,
@@ -168,13 +261,7 @@ const getClients = async (req, res) => {
     });
 
   } catch (error) {
-
-    console.error("Get clients error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    return sendError(res, error);
   }
 };
 
@@ -186,19 +273,18 @@ const getClients = async (req, res) => {
 
 const getClientById = async (req, res) => {
   try {
+    const { id } = req.params;
 
-    if (!mongoose.isValidObjectId(req.params.id)) {
+    if (!isValidId(id)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid client id",
+        message: "Invalid client ID",
       });
     }
 
-
-    const client = await Client.findById(req.params.id)
+    const client = await Client.findById(id)
       .populate("projectCount")
       .populate("projects");
-
 
     if (!client) {
       return res.status(404).json({
@@ -207,32 +293,24 @@ const getClientById = async (req, res) => {
       });
     }
 
-
     return res.status(200).json({
       success: true,
       data: client,
     });
 
   } catch (error) {
-
-    console.error("Get client error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    return sendError(res, error);
   }
 };
 
 
 // =====================================================
-// WEBSITE CLIENTS
+// GET WEBSITE CLIENTS
 // GET /api/clients/website
 // =====================================================
 
 const getWebsiteClients = async (req, res) => {
   try {
-
     const clients = await Client.find({
       showOnWebsite: true,
       status: "active",
@@ -246,22 +324,18 @@ const getWebsiteClients = async (req, res) => {
       })
       .lean();
 
-
+    // Group clients according to sector
     const groupedClients = {
       government: [],
       private: [],
       international: [],
     };
 
-
     clients.forEach((client) => {
-
       if (groupedClients[client.sector]) {
         groupedClients[client.sector].push(client);
       }
-
     });
-
 
     return res.status(200).json({
       success: true,
@@ -269,13 +343,7 @@ const getWebsiteClients = async (req, res) => {
     });
 
   } catch (error) {
-
-    console.error("Website clients error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    return sendError(res, error);
   }
 };
 
@@ -289,17 +357,16 @@ const updateClient = async (req, res) => {
   let newLogo = null;
 
   try {
+    const { id } = req.params;
 
-    if (!mongoose.isValidObjectId(req.params.id)) {
+    if (!isValidId(id)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid client id",
+        message: "Invalid client ID",
       });
     }
 
-
-    const client = await Client.findById(req.params.id);
-
+    const client = await Client.findById(id);
 
     if (!client) {
       return res.status(404).json({
@@ -308,50 +375,47 @@ const updateClient = async (req, res) => {
       });
     }
 
-
     const data = parseClientData(req.body);
+
+    const updatedFields = Object.keys(data);
 
     const oldLogoPublicId =
       client.logo?.publicId;
 
-
-    // ========================
-    // New logo received
-    // ========================
-
+    // Upload replacement logo
     if (req.file) {
-
       newLogo = await uploadToCloudinary(
         req.file.buffer,
-        "tectonic/clients"
+        CLIENT_LOGO_FOLDER
       );
 
       data.logo = newLogo;
     }
 
-
-    // ========================
-    // Update client
-    // ========================
-
+    // Update client fields
     Object.assign(client, data);
 
+    // Save updated client
     await client.save();
 
+    // Activity Log
+    await createAuditLog({
+      req,
+      module: "clients",
+      action: "update",
+      description: `Updated client: ${client.name}`,
+      targetId: client._id,
+      targetName: client.name,
+      metadata: {
+        updatedFields,
+        logoChanged: Boolean(req.file),
+      },
+    });
 
-    // ========================
-    // Delete old logo
-    // ========================
-
-    if (
-      req.file &&
-      oldLogoPublicId
-    ) {
-      await deleteFromCloudinary(
-        oldLogoPublicId
-      );
+    // Delete old logo only after successful database save
+    if (req.file && oldLogoPublicId) {
+      await safelyDeleteImage(oldLogoPublicId);
     }
-
 
     return res.status(200).json({
       success: true,
@@ -360,30 +424,12 @@ const updateClient = async (req, res) => {
     });
 
   } catch (error) {
-
-    // New image upload ho gayi but DB update fail hua
+    // Remove newly uploaded image if update fails
     if (newLogo?.publicId) {
-      await deleteFromCloudinary(
-        newLogo.publicId
-      );
+      await safelyDeleteImage(newLogo.publicId);
     }
 
-
-    console.error("Update client error:", error);
-
-
-    if (error.code === 11000) {
-      return res.status(409).json({
-        success: false,
-        message: "Client with this name already exists",
-      });
-    }
-
-
-    return res.status(400).json({
-      success: false,
-      message: error.message,
-    });
+    return sendError(res, error);
   }
 };
 
@@ -395,19 +441,16 @@ const updateClient = async (req, res) => {
 
 const deleteClient = async (req, res) => {
   try {
+    const { id } = req.params;
 
-    if (!mongoose.isValidObjectId(req.params.id)) {
+    if (!isValidId(id)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid client id",
+        message: "Invalid client ID",
       });
     }
 
-
-    const client = await Client.findById(
-      req.params.id
-    );
-
+    const client = await Client.findById(id);
 
     if (!client) {
       return res.status(404).json({
@@ -416,44 +459,41 @@ const deleteClient = async (req, res) => {
       });
     }
 
+    // Check whether this client has associated projects
+    const projectCount = await Project.countDocuments({
+      client: client._id,
+    });
 
-    // Check client projects
-    if (mongoose.models.Project) {
-
-      const projectCount =
-        await mongoose.models.Project.countDocuments({
-          client: client._id,
-        });
-
-
-      if (projectCount > 0) {
-
-        return res.status(409).json({
-          success: false,
-
-          message:
-            `Cannot delete client because it has ${projectCount} project(s)`,
-        });
-
-      }
+    if (projectCount > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot delete client because it has ${projectCount} project(s)`,
+      });
     }
 
+    const logoPublicId = client.logo?.publicId;
 
-    const logoPublicId =
-      client.logo?.publicId;
+    // Store details before deleting
+    const deletedClientId = client._id;
+    const deletedClientName = client.name;
 
-
-    // Delete from database
+    // Delete client from database
     await client.deleteOne();
 
+    // Activity Log
+    await createAuditLog({
+      req,
+      module: "clients",
+      action: "delete",
+      description: `Deleted client: ${deletedClientName}`,
+      targetId: deletedClientId,
+      targetName: deletedClientName,
+    });
 
     // Delete logo from Cloudinary
     if (logoPublicId) {
-      await deleteFromCloudinary(
-        logoPublicId
-      );
+      await safelyDeleteImage(logoPublicId);
     }
-
 
     return res.status(200).json({
       success: true,
@@ -461,19 +501,13 @@ const deleteClient = async (req, res) => {
     });
 
   } catch (error) {
-
-    console.error("Delete client error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    return sendError(res, error);
   }
 };
 
 
 // =====================================================
-// EXPORT
+// EXPORT CONTROLLERS
 // =====================================================
 
 module.exports = {

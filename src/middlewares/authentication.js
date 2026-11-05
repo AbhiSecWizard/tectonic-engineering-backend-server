@@ -1,10 +1,11 @@
 const jwt = require("jsonwebtoken");
+const User = require("../models/auth.model");
 
 const authentication = async (req, res, next) => {
   try {
-    // Get admin token from cookie
     const token = req.cookies?.adminToken;
 
+    // Check token
     if (!token) {
       return res.status(401).json({
         success: false,
@@ -12,27 +13,42 @@ const authentication = async (req, res, next) => {
       });
     }
 
-    // Verify token
+    // Verify JWT
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // Store decoded data
-    req.user = decoded;
+    // Fetch current user from MongoDB
+    const user = await User.findById(decoded.id);
 
-    next();
-  } catch (error) {
-    console.error("Authentication Error:", error.message);
-
-    if (error.name === "TokenExpiredError") {
+    if (!user) {
       return res.status(401).json({
         success: false,
-        message: "Session expired. Please login again.",
+        message: "User account not found.",
       });
     }
 
-    if (error.name === "JsonWebTokenError") {
+    // Check current account status
+    if (user.status !== "active") {
+      return res.status(403).json({
+        success: false,
+        message: "Your account is inactive.",
+      });
+    }
+
+    // Attach database user to request
+    req.user = user;
+
+    next();
+
+  } catch (error) {
+    console.error("Authentication Error:", error.message);
+
+    if (
+      error.name === "TokenExpiredError" ||
+      error.name === "JsonWebTokenError"
+    ) {
       return res.status(401).json({
         success: false,
-        message: "Invalid authentication token.",
+        message: "Invalid or expired session. Please login again.",
       });
     }
 

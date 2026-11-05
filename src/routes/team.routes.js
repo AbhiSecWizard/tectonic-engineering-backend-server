@@ -1,8 +1,10 @@
+
 const express = require("express");
 const router = express.Router();
 
 const { upload } = require("../middlewares/upload");
 const authentication = require("../middlewares/authentication");
+const authorize = require("../middlewares/authorize");
 
 const {
   createTeamMember,
@@ -18,15 +20,12 @@ const {
 // ==========================================
 
 // GET ALL TEAM MEMBERS
-// GET /api/team
 router.get(
   "/",
   getTeamMembers
 );
 
-
 // GET SINGLE TEAM MEMBER
-// GET /api/team/:id
 router.get(
   "/:id",
   getTeamMemberById
@@ -34,34 +33,53 @@ router.get(
 
 
 // ==========================================
-// ADMIN ROUTES
+// ADMIN READ ROUTES
+// ==========================================
+
+// GET ALL TEAM MEMBERS (Admin)
+router.get(
+  "/admin/all",
+  authentication,
+  authorize("team", "read"),
+  getTeamMembers
+);
+
+// GET SINGLE TEAM MEMBER (Admin)
+router.get(
+  "/admin/:id",
+  authentication,
+  authorize("team", "read"),
+  getTeamMemberById
+);
+
+
+// ==========================================
+// ADMIN WRITE ROUTES
 // ==========================================
 
 // CREATE TEAM MEMBER
-// POST /api/team
 router.post(
   "/",
   authentication,
+  authorize("team", "create"),
   upload.single("photo"),
   createTeamMember
 );
 
-
 // UPDATE TEAM MEMBER
-// PUT /api/team/:id
 router.put(
   "/:id",
   authentication,
+  authorize("team", "update"),
   upload.single("photo"),
   updateTeamMember
 );
 
-
 // DELETE TEAM MEMBER
-// DELETE /api/team/:id
 router.delete(
   "/:id",
   authentication,
+  authorize("team", "delete"),
   deleteTeamMember
 );
 

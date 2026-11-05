@@ -1,9 +1,14 @@
+
 const mongoose = require("mongoose");
-const Project = require("../models/project.model"); // adjust path to your model
+const Project = require("../models/project.model");
+
 const {
   uploadToCloudinary,
   deleteFromCloudinary,
 } = require("../services/cloudinaryUpload");
+
+const createAuditLog = require("../utils/createAuditLog");
+
 
 // =========================
 // Helpers
@@ -37,9 +42,11 @@ const ALLOWED_FIELDS = [
 const NESTED_FIELDS = ["location", "specs", "contactPerson"];
 const ARRAY_FIELDS = ["services", "team", "softwareUsed"];
 
-// multipart/form-data sends everything as strings, so try to JSON-parse
+
+// Parse JSON values
 const parseValue = (value) => {
   if (typeof value !== "string") return value;
+
   try {
     return JSON.parse(value);
   } catch {
@@ -47,14 +54,22 @@ const parseValue = (value) => {
   }
 };
 
+
+// Convert value into array
 const toArray = (value) => {
   const parsed = parseValue(value);
+
   if (Array.isArray(parsed)) return parsed;
-  if (parsed === undefined || parsed === null || parsed === "") return [];
+
+  if (parsed === undefined || parsed === null || parsed === "") {
+    return [];
+  }
+
   return [parsed];
 };
 
-// Pull only allowed fields from req.body and normalise their types
+
+// Pick allowed fields from request body
 const pickPayload = (body) => {
   const payload = {};
 
@@ -65,11 +80,14 @@ const pickPayload = (body) => {
       payload[field] = toArray(body[field]);
     } else if (NESTED_FIELDS.includes(field)) {
       const parsed = parseValue(body[field]);
-      if (parsed && typeof parsed === "object") payload[field] = parsed;
+
+      if (parsed && typeof parsed === "object") {
+        payload[field] = parsed;
+      }
     } else if (field === "showOnWebsite") {
-      payload[field] = body[field] === true || body[field] === "true";
+      payload[field] =
+        body[field] === true || body[field] === "true";
     } else if (body[field] === "") {
-      // empty string -> leave unset (avoids ObjectId / Date / enum cast errors)
       return;
     } else {
       payload[field] = body[field];
@@ -79,30 +97,43 @@ const pickPayload = (body) => {
   return payload;
 };
 
+
+// Error Handler
 const sendError = (res, error) => {
   if (error.name === "ValidationError") {
     const errors = Object.values(error.errors).map((e) => e.message);
-    return res.status(400).json({ success: false, message: errors[0], errors });
+
+    return res.status(400).json({
+      success: false,
+      message: errors[0],
+      errors,
+    });
   }
 
   if (error.name === "CastError") {
-    return res
-      .status(400)
-      .json({ success: false, message: `Invalid value for ${error.path}` });
+    return res.status(400).json({
+      success: false,
+      message: `Invalid value for ${error.path}`,
+    });
   }
 
   if (error.code === 11000) {
     const field = Object.keys(error.keyPattern || {})[0] || "field";
-    return res
-      .status(409)
-      .json({ success: false, message: `A project with this ${field} already exists` });
+
+    return res.status(409).json({
+      success: false,
+      message: `A project with this ${field} already exists`,
+    });
   }
 
   console.error(error);
-  return res
-    .status(500)
-    .json({ success: false, message: error.message || "Server error" });
+
+  return res.status(500).json({
+    success: false,
+    message: error.message || "Server error",
+  });
 };
+
 
 const populateProject = (query) =>
   query
@@ -111,55 +142,80 @@ const populateProject = (query) =>
     .populate("team", "name email")
     .populate("createdBy", "name email");
 
+
 // =========================
 // CREATE
 // POST /api/projects
 // =========================
 
 const createProject = async (req, res) => {
-  const uploaded = []; // track uploads so we can roll back if save fails
+  const uploaded = [];
 
   try {
     const payload = pickPayload(req.body);
 
-    if (req.user?._id) payload.createdBy = req.user._id;
+    if (req.user?._id) {
+      payload.createdBy = req.user._id;
+    }
 
     const coverFile = req.files?.coverImage?.[0];
     const galleryFiles = req.files?.images || [];
 
+    // Upload cover image
     if (coverFile) {
       const cover = await uploadToCloudinary(coverFile.buffer);
+
       uploaded.push(cover.publicId);
       payload.coverImage = cover;
     }
 
+    // Upload gallery images
     if (galleryFiles.length) {
       const images = await Promise.all(
-        galleryFiles.map((file) => uploadToCloudinary(file.buffer))
+        galleryFiles.map((file) =>
+          uploadToCloudinary(file.buffer)
+        )
       );
+
       images.forEach((img) => uploaded.push(img.publicId));
+
       payload.images = images;
     }
 
+    // Save project
     const project = await Project.create(payload);
 
-    res.status(201).json({
+    // ======================================
+    // ACTIVITY LOG
+    // ======================================
+
+    await createAuditLog({
+      req,
+      module: "projects",
+      action: "create",
+      description: `Created project: ${project.name}`,
+      targetId: project._id,
+      targetName: project.name,
+    });
+
+    return res.status(201).json({
       success: true,
       message: "Project created successfully",
       data: project,
     });
+
   } catch (error) {
-    // roll back any images already uploaded
+    // Rollback uploaded images if save fails
     await Promise.all(uploaded.map(deleteFromCloudinary));
+
     sendError(res, error);
   }
 };
 
+
 // =========================
-// READ ALL (admin, with filters)
+// READ ALL (ADMIN)
 // GET /api/projects
-// Query: page, limit, search, status, category, structureType, client,
-//        leadEngineer, showOnWebsite, service, sort
 // =========================
 
 const getProjects = async (req, res) => {
@@ -203,8 +259,7 @@ const getProjects = async (req, res) => {
     }
 
     if (showOnWebsite !== undefined) {
-      filter.showOnWebsite =
-        showOnWebsite === "true";
+      filter.showOnWebsite = showOnWebsite === "true";
     }
 
     if (search) {
@@ -245,23 +300,40 @@ const getProjects = async (req, res) => {
     sendError(res, error);
   }
 };
+
+
 // =========================
-// READ ALL (public website)
+// READ ALL (PUBLIC WEBSITE)
 // GET /api/projects/website
-// Query: category, page, limit
 // =========================
 
 const getWebsiteProjects = async (req, res) => {
   try {
-    const { category, page = 1, limit = 12 } = req.query;
+    const {
+      category,
+      page = 1,
+      limit = 12,
+    } = req.query;
 
-    const filter = { showOnWebsite: true };
-    if (category) filter.category = category;
+    const filter = {
+      showOnWebsite: true,
+    };
 
-    const pageNum = Math.max(parseInt(page, 10) || 1, 1);
-    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 12, 1), 50);
+    if (category) {
+      filter.category = category;
+    }
 
-    // Only expose fields safe for the public (no financials / contacts / notes)
+    const pageNum = Math.max(
+      parseInt(page, 10) || 1,
+      1
+    );
+
+    const limitNum = Math.min(
+      Math.max(parseInt(limit, 10) || 12, 1),
+      50
+    );
+
+    // Only expose public-safe fields
     const [projects, total] = await Promise.all([
       Project.find(filter)
         .select(
@@ -270,10 +342,11 @@ const getWebsiteProjects = async (req, res) => {
         .sort("-createdAt")
         .skip((pageNum - 1) * limitNum)
         .limit(limitNum),
+
       Project.countDocuments(filter),
     ]);
 
-    res.json({
+    return res.json({
       success: true,
       count: projects.length,
       total,
@@ -281,10 +354,12 @@ const getWebsiteProjects = async (req, res) => {
       pages: Math.ceil(total / limitNum),
       data: projects,
     });
+
   } catch (error) {
     sendError(res, error);
   }
 };
+
 
 // =========================
 // READ ONE
@@ -295,7 +370,6 @@ const getProjectById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Check valid MongoDB ObjectId
     if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({
         success: false,
@@ -303,8 +377,6 @@ const getProjectById = async (req, res) => {
       });
     }
 
-    // Find project directly
-    // NO populate()
     const project = await Project.findById(id);
 
     if (!project) {
@@ -318,6 +390,7 @@ const getProjectById = async (req, res) => {
       success: true,
       data: project,
     });
+
   } catch (error) {
     console.error("Get Project By ID Error:", error);
 
@@ -328,13 +401,10 @@ const getProjectById = async (req, res) => {
   }
 };
 
+
 // =========================
 // UPDATE
 // PUT /api/projects/:id
-// Extra body fields:
-//   removeImages  -> array (or JSON string) of publicIds to delete from gallery
-//   removeCover   -> "true" to delete the current cover image
-// Files: coverImage (replaces cover), images (appended to gallery)
 // =========================
 
 const updateProject = async (req, res) => {
@@ -344,23 +414,27 @@ const updateProject = async (req, res) => {
     const { id } = req.params;
 
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ success: false, message: "Invalid project ID" });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid project ID",
+      });
     }
 
-    // findById + save() so the pre("save") / pre("validate") hooks run
     const project = await Project.findById(id);
 
     if (!project) {
-      return res.status(404).json({ success: false, message: "Project not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Project not found",
+      });
     }
 
     const payload = pickPayload(req.body);
     const oldPublicIdsToDelete = [];
 
-    // Apply simple + array fields
+    // Apply simple and array fields
     Object.entries(payload).forEach(([key, value]) => {
       if (NESTED_FIELDS.includes(key)) {
-        // merge nested objects instead of wiping untouched keys
         Object.entries(value).forEach(([subKey, subValue]) => {
           project.set(`${key}.${subKey}`, subValue);
         });
@@ -369,64 +443,103 @@ const updateProject = async (req, res) => {
       }
     });
 
-    // ---- Cover image ----
+    // Cover image
     const coverFile = req.files?.coverImage?.[0];
-    const removeCover = req.body.removeCover === true || req.body.removeCover === "true";
+
+    const removeCover =
+      req.body.removeCover === true ||
+      req.body.removeCover === "true";
 
     if (coverFile) {
       const cover = await uploadToCloudinary(coverFile.buffer);
+
       uploaded.push(cover.publicId);
+
       if (project.coverImage?.publicId) {
         oldPublicIdsToDelete.push(project.coverImage.publicId);
       }
+
       project.coverImage = cover;
+
     } else if (removeCover && project.coverImage?.publicId) {
       oldPublicIdsToDelete.push(project.coverImage.publicId);
       project.coverImage = undefined;
     }
 
-    // ---- Gallery: remove ----
+    // Remove gallery images
     const removeImages = toArray(req.body.removeImages);
+
     if (removeImages.length) {
       project.images = project.images.filter((img) => {
         if (removeImages.includes(img.publicId)) {
           oldPublicIdsToDelete.push(img.publicId);
           return false;
         }
+
         return true;
       });
     }
 
-    // ---- Gallery: add ----
+    // Add gallery images
     const galleryFiles = req.files?.images || [];
+
     if (galleryFiles.length) {
       const newImages = await Promise.all(
-        galleryFiles.map((file) => uploadToCloudinary(file.buffer))
+        galleryFiles.map((file) =>
+          uploadToCloudinary(file.buffer)
+        )
       );
+
       newImages.forEach((img) => uploaded.push(img.publicId));
+
       project.images.push(...newImages);
     }
 
+    // Save updated project
     await project.save();
 
-    // Only delete old images after the DB save succeeded
-    await Promise.all(oldPublicIdsToDelete.map(deleteFromCloudinary));
+    // Delete old images after successful save
+    await Promise.all(
+      oldPublicIdsToDelete.map(deleteFromCloudinary)
+    );
 
-    res.json({
+    // ======================================
+    // ACTIVITY LOG
+    // ======================================
+
+    await createAuditLog({
+      req,
+      module: "projects",
+      action: "update",
+      description: `Updated project: ${project.name}`,
+      targetId: project._id,
+      targetName: project.name,
+      metadata: {
+        updatedFields: Object.keys(payload),
+        coverImageChanged: Boolean(coverFile || removeCover),
+        galleryImagesAdded: galleryFiles.length,
+        galleryImagesRemoved: removeImages.length,
+      },
+    });
+
+    return res.json({
       success: true,
       message: "Project updated successfully",
       data: project,
     });
+
   } catch (error) {
-    // roll back newly uploaded images if the update failed
+    // Rollback newly uploaded images if update fails
     await Promise.all(uploaded.map(deleteFromCloudinary));
+
     sendError(res, error);
   }
 };
 
+
 // =========================
 // TOGGLE WEBSITE VISIBILITY
-// PATCH /api/projects/:id/website
+// PATCH /api/projects/:id/visibility
 // =========================
 
 const toggleWebsiteVisibility = async (req, res) => {
@@ -434,27 +547,60 @@ const toggleWebsiteVisibility = async (req, res) => {
     const { id } = req.params;
 
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ success: false, message: "Invalid project ID" });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid project ID",
+      });
     }
 
     const project = await Project.findById(id);
 
     if (!project) {
-      return res.status(404).json({ success: false, message: "Project not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Project not found",
+      });
     }
 
+    // Toggle visibility
     project.showOnWebsite = !project.showOnWebsite;
+
     await project.save();
 
-    res.json({
-      success: true,
-      message: `Project ${project.showOnWebsite ? "is now visible on" : "hidden from"} the website`,
-      data: { _id: project._id, showOnWebsite: project.showOnWebsite },
+    // ======================================
+    // ACTIVITY LOG
+    // ======================================
+
+    await createAuditLog({
+      req,
+      module: "projects",
+      action: "update",
+      description: `Changed website visibility of project: ${project.name}`,
+      targetId: project._id,
+      targetName: project.name,
+      metadata: {
+        showOnWebsite: project.showOnWebsite,
+      },
     });
+
+    return res.json({
+      success: true,
+      message: `Project ${
+        project.showOnWebsite
+          ? "is now visible on"
+          : "hidden from"
+      } the website`,
+      data: {
+        _id: project._id,
+        showOnWebsite: project.showOnWebsite,
+      },
+    });
+
   } catch (error) {
     sendError(res, error);
   }
 };
+
 
 // =========================
 // DELETE
@@ -466,29 +612,63 @@ const deleteProject = async (req, res) => {
     const { id } = req.params;
 
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ success: false, message: "Invalid project ID" });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid project ID",
+      });
     }
 
     const project = await Project.findById(id);
 
     if (!project) {
-      return res.status(404).json({ success: false, message: "Project not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Project not found",
+      });
     }
 
-    // Collect every Cloudinary image tied to this project
+    // Collect Cloudinary image IDs
     const publicIds = [
       project.coverImage?.publicId,
       ...project.images.map((img) => img.publicId),
     ].filter(Boolean);
 
-    await project.deleteOne();
-    await Promise.all(publicIds.map(deleteFromCloudinary));
+    // Store details before deleting
+    const deletedProjectId = project._id;
+    const deletedProjectName = project.name;
 
-    res.json({ success: true, message: "Project deleted successfully" });
+    // Delete project from database
+    await project.deleteOne();
+
+    // Activity Log
+    await createAuditLog({
+      req,
+      module: "projects",
+      action: "delete",
+      description: `Deleted project: ${deletedProjectName}`,
+      targetId: deletedProjectId,
+      targetName: deletedProjectName,
+    });
+
+    // Delete images from Cloudinary
+    await Promise.all(
+      publicIds.map(deleteFromCloudinary)
+    );
+
+    return res.json({
+      success: true,
+      message: "Project deleted successfully",
+    });
+
   } catch (error) {
     sendError(res, error);
   }
 };
+
+
+// =========================
+// EXPORTS
+// =========================
 
 module.exports = {
   createProject,

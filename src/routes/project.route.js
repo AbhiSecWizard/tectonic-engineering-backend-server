@@ -1,8 +1,10 @@
+
 const express = require("express");
 const router = express.Router();
 
 const { projectUpload } = require("../middlewares/upload");
 const authentication = require("../middlewares/authentication");
+const authorize = require("../middlewares/authorize");
 
 const {
   createProject,
@@ -20,7 +22,6 @@ const {
 // ==========================================
 
 // GET WEBSITE PROJECTS
-// GET /api/projects/website
 router.get(
   "/website",
   getWebsiteProjects
@@ -28,61 +29,61 @@ router.get(
 
 
 // ==========================================
-// ADMIN ROUTES
+// ADMIN READ ROUTES
 // ==========================================
 
-// CREATE PROJECT
-// POST /api/projects
-router.post(
-  "/",
-  authentication,
-  projectUpload,
-  createProject
-);
-
-
 // GET ALL PROJECTS
-// GET /api/projects
 router.get(
   "/",
   authentication,
+  authorize("projects", "read"),
   getProjects
 );
 
-
 // GET SINGLE PROJECT
-// GET /api/projects/:id
 router.get(
   "/:id",
   authentication,
+  authorize("projects", "read"),
   getProjectById
 );
 
 
+// ==========================================
+// ADMIN WRITE ROUTES
+// ==========================================
+
+// CREATE PROJECT
+router.post(
+  "/",
+  authentication,
+  authorize("projects", "create"),
+  projectUpload,
+  createProject
+);
+
 // UPDATE PROJECT
-// PUT /api/projects/:id
 router.put(
   "/:id",
   authentication,
+  authorize("projects", "update"),
   projectUpload,
   updateProject
 );
 
-
 // TOGGLE WEBSITE VISIBILITY
-// PATCH /api/projects/:id/visibility
 router.patch(
   "/:id/visibility",
   authentication,
+  authorize("projects", "update"),
   toggleWebsiteVisibility
 );
 
-
 // DELETE PROJECT
-// DELETE /api/projects/:id
 router.delete(
   "/:id",
   authentication,
+  authorize("projects", "delete"),
   deleteProject
 );
 

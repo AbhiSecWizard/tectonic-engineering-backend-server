@@ -1,9 +1,10 @@
-const express = require("express");
 
+const express = require("express");
 const router = express.Router();
 
 const { upload } = require("../middlewares/upload");
 const authentication = require("../middlewares/authentication");
+const authorize = require("../middlewares/authorize");
 
 const {
   createGallery,
@@ -19,50 +20,60 @@ const {
 // ==========================================
 
 // Get All Gallery Images
-// GET /api/gallery
+router.get("/", getGallery);
+
+// Get Single Gallery Image
+router.get("/:id", getGalleryById);
+
+
+// ==========================================
+// ADMIN READ ROUTES
+// ==========================================
+
+// Get All Gallery Images (Admin)
 router.get(
-  "/",
+  "/admin/all",
+  authentication,
+  authorize("gallery", "read"),
   getGallery
 );
 
-
-// Get Single Gallery Image
-// GET /api/gallery/:id
+// Get Single Gallery Image (Admin)
 router.get(
-  "/:id",
+  "/admin/:id",
+  authentication,
+  authorize("gallery", "read"),
   getGalleryById
 );
 
 
 // ==========================================
-// ADMIN ROUTES
+// ADMIN WRITE ROUTES
 // ==========================================
 
 // Create Gallery Image
-// POST /api/gallery
 router.post(
   "/",
   authentication,
+  authorize("gallery", "create"),
   upload.single("image"),
   createGallery
 );
 
-
 // Update Gallery Image
-// PUT /api/gallery/:id
 router.put(
   "/:id",
   authentication,
+  authorize("gallery", "update"),
   upload.single("image"),
   updateGallery
 );
 
-
 // Delete Gallery Image
-// DELETE /api/gallery/:id
 router.delete(
   "/:id",
   authentication,
+  authorize("gallery", "delete"),
   deleteGallery
 );
 

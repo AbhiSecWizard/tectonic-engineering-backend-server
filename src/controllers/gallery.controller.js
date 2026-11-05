@@ -1,4 +1,6 @@
 
+const mongoose = require("mongoose");
+
 const Gallery = require("../models/gallery.model");
 
 const {
@@ -6,21 +8,104 @@ const {
   deleteFromCloudinary,
 } = require("../services/cloudinaryUpload");
 
+const createAuditLog = require("../utils/createAuditLog");
 
-// 1. CREATE GALLERY - Upload Image
+
+// =====================================================
+// CONFIGURATION
+// =====================================================
+
+const GALLERY_FOLDER = "gallery";
+
+
+// =====================================================
+// HELPER FUNCTIONS
+// =====================================================
+
+// Validate MongoDB ObjectId
+const isValidId = (id) => {
+  return mongoose.isValidObjectId(id);
+};
+
+
+// Safely delete Cloudinary image
+const safelyDeleteImage = async (publicId) => {
+  if (!publicId) return;
+
+  try {
+    await deleteFromCloudinary(publicId);
+  } catch (error) {
+    console.error(
+      "Cloudinary Image Cleanup Error:",
+      error.message
+    );
+  }
+};
+
+
+// Common error handler
+const sendError = (res, error) => {
+  console.error("Gallery Controller Error:", error);
+
+  if (error.name === "ValidationError") {
+    const errors = Object.values(error.errors).map(
+      (item) => item.message
+    );
+
+    return res.status(400).json({
+      success: false,
+      message: errors[0],
+      errors,
+    });
+  }
+
+  if (error.name === "CastError") {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid gallery ID",
+    });
+  }
+
+  if (error.code === 11000) {
+    return res.status(409).json({
+      success: false,
+      message: "Gallery record already exists",
+    });
+  }
+
+  return res.status(500).json({
+    success: false,
+    message:
+      process.env.NODE_ENV === "production"
+        ? "Server error"
+        : error.message,
+  });
+};
+
+
+// =====================================================
+// CREATE GALLERY
+// POST /api/gallery
+// =====================================================
+
 const createGallery = async (req, res) => {
+  let uploadedImage = null;
+
   try {
     const { imageName } = req.body;
 
     // Validate image name
-    if (!imageName || !imageName.trim()) {
+    if (
+      typeof imageName !== "string" ||
+      !imageName.trim()
+    ) {
       return res.status(400).json({
         success: false,
         message: "Image name is required",
       });
     }
 
-    // Validate uploaded file
+    // Validate uploaded image
     if (!req.file) {
       return res.status(400).json({
         success: false,
@@ -29,15 +114,25 @@ const createGallery = async (req, res) => {
     }
 
     // Upload image to Cloudinary
-    const image = await uploadToCloudinary(
+    uploadedImage = await uploadToCloudinary(
       req.file.buffer,
-      "gallery"
+      GALLERY_FOLDER
     );
 
-    // Save image details in MongoDB
+    // Save gallery record in MongoDB
     const gallery = await Gallery.create({
-      image,
+      image: uploadedImage,
       imageName: imageName.trim(),
+    });
+
+    // Activity Log
+    await createAuditLog({
+      req,
+      module: "gallery",
+      action: "create",
+      description: `Uploaded gallery image: ${gallery.imageName}`,
+      targetId: gallery._id,
+      targetName: gallery.imageName,
     });
 
     return res.status(201).json({
@@ -47,23 +142,27 @@ const createGallery = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Create Gallery Error:", error);
+    // Rollback uploaded image if database operation fails
+    if (uploadedImage?.publicId) {
+      await safelyDeleteImage(uploadedImage.publicId);
+    }
 
-    return res.status(500).json({
-      success: false,
-      message: "Failed to upload gallery image",
-      error: error.message,
-    });
+    return sendError(res, error);
   }
 };
 
 
-// 2. GET ALL GALLERY IMAGES
+// =====================================================
+// GET ALL GALLERY IMAGES
+// GET /api/gallery
+// =====================================================
+
 const getGallery = async (req, res) => {
   try {
-    const gallery = await Gallery.find().sort({
-      createdAt: -1,
-    });
+    const gallery = await Gallery.find()
+      .sort({
+        createdAt: -1,
+      });
 
     return res.status(200).json({
       success: true,
@@ -72,20 +171,28 @@ const getGallery = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Get Gallery Error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch gallery images",
-    });
+    return sendError(res, error);
   }
 };
 
 
-// 3. GET SINGLE GALLERY IMAGE
+// =====================================================
+// GET SINGLE GALLERY IMAGE
+// GET /api/gallery/:id
+// =====================================================
+
 const getGalleryById = async (req, res) => {
   try {
-    const gallery = await Gallery.findById(req.params.id);
+    const { id } = req.params;
+
+    if (!isValidId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid gallery ID",
+      });
+    }
+
+    const gallery = await Gallery.findById(id);
 
     if (!gallery) {
       return res.status(404).json({
@@ -100,29 +207,31 @@ const getGalleryById = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Get Gallery By ID Error:", error);
+    return sendError(res, error);
+  }
+};
 
-    if (error.name === "CastError") {
+
+// =====================================================
+// UPDATE GALLERY IMAGE
+// PUT /api/gallery/:id
+// =====================================================
+
+const updateGallery = async (req, res) => {
+  let newImage = null;
+
+  try {
+    const { id } = req.params;
+    const { imageName } = req.body;
+
+    if (!isValidId(id)) {
       return res.status(400).json({
         success: false,
         message: "Invalid gallery ID",
       });
     }
 
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch gallery image",
-    });
-  }
-};
-
-
-// 4. UPDATE GALLERY IMAGE
-const updateGallery = async (req, res) => {
-  try {
-    const { imageName } = req.body;
-
-    const gallery = await Gallery.findById(req.params.id);
+    const gallery = await Gallery.findById(id);
 
     if (!gallery) {
       return res.status(404).json({
@@ -131,9 +240,12 @@ const updateGallery = async (req, res) => {
       });
     }
 
-    // Update image name if provided
+    // Validate image name if provided
     if (imageName !== undefined) {
-      if (!imageName.trim()) {
+      if (
+        typeof imageName !== "string" ||
+        !imageName.trim()
+      ) {
         return res.status(400).json({
           success: false,
           message: "Image name cannot be empty",
@@ -143,24 +255,38 @@ const updateGallery = async (req, res) => {
       gallery.imageName = imageName.trim();
     }
 
-    // If a new image is uploaded
+    const oldPublicId = gallery.image?.publicId;
+
+    // Upload replacement image
     if (req.file) {
-      const newImage = await uploadToCloudinary(
+      newImage = await uploadToCloudinary(
         req.file.buffer,
-        "gallery"
+        GALLERY_FOLDER
       );
 
-      const oldPublicId = gallery.image.publicId;
-
       gallery.image = newImage;
+    }
 
-      await gallery.save();
+    // Save updated gallery record
+    await gallery.save();
 
-      // Delete old image after successful database update
-      await deleteFromCloudinary(oldPublicId);
+    // Activity Log
+    await createAuditLog({
+      req,
+      module: "gallery",
+      action: "update",
+      description: `Updated gallery image: ${gallery.imageName}`,
+      targetId: gallery._id,
+      targetName: gallery.imageName,
+      metadata: {
+        imageNameChanged: imageName !== undefined,
+        imageChanged: Boolean(req.file),
+      },
+    });
 
-    } else {
-      await gallery.save();
+    // Delete old image after successful database update
+    if (req.file && oldPublicId) {
+      await safelyDeleteImage(oldPublicId);
     }
 
     return res.status(200).json({
@@ -170,21 +296,33 @@ const updateGallery = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Update Gallery Error:", error);
+    // Remove newly uploaded image if update fails
+    if (newImage?.publicId) {
+      await safelyDeleteImage(newImage.publicId);
+    }
 
-    return res.status(500).json({
-      success: false,
-      message: "Failed to update gallery image",
-      error: error.message,
-    });
+    return sendError(res, error);
   }
 };
 
 
-// 5. DELETE GALLERY IMAGE
+// =====================================================
+// DELETE GALLERY IMAGE
+// DELETE /api/gallery/:id
+// =====================================================
+
 const deleteGallery = async (req, res) => {
   try {
-    const gallery = await Gallery.findById(req.params.id);
+    const { id } = req.params;
+
+    if (!isValidId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid gallery ID",
+      });
+    }
+
+    const gallery = await Gallery.findById(id);
 
     if (!gallery) {
       return res.status(404).json({
@@ -193,11 +331,28 @@ const deleteGallery = async (req, res) => {
       });
     }
 
-    // Delete image from Cloudinary
-    await deleteFromCloudinary(gallery.image.publicId);
+    // Store details before deletion
+    const deletedGalleryId = gallery._id;
+    const deletedImageName = gallery.imageName;
+    const publicId = gallery.image?.publicId;
 
     // Delete record from MongoDB
-    await Gallery.findByIdAndDelete(req.params.id);
+    await gallery.deleteOne();
+
+    // Activity Log
+    await createAuditLog({
+      req,
+      module: "gallery",
+      action: "delete",
+      description: `Deleted gallery image: ${deletedImageName}`,
+      targetId: deletedGalleryId,
+      targetName: deletedImageName,
+    });
+
+    // Delete image from Cloudinary
+    if (publicId) {
+      await safelyDeleteImage(publicId);
+    }
 
     return res.status(200).json({
       success: true,
@@ -205,15 +360,14 @@ const deleteGallery = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Delete Gallery Error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to delete gallery image",
-    });
+    return sendError(res, error);
   }
 };
 
+
+// =====================================================
+// EXPORT CONTROLLERS
+// =====================================================
 
 module.exports = {
   createGallery,
